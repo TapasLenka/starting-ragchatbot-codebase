@@ -6,10 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Requires Python 3.13+ and `uv`. On Windows, use Git Bash.
 
-```bash
-# Install dependencies
-uv sync
+Always use `uv` for all Python tooling — never `pip` or bare `python`/`uvicorn`:
 
+```bash
+uv sync                  # install/sync dependencies
+uv add <package>         # add a dependency
+uv remove <package>      # remove a dependency
+uv run <command>         # run any Python command or script
+```
+
+```bash
 # Start the server (runs from backend/ automatically)
 ./run.sh
 
