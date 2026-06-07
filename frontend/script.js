@@ -19,6 +19,7 @@ document.addEventListener('DOMContentLoaded', () => {
     setupEventListeners();
     createNewSession();
     loadCourseStats();
+    document.getElementById('newChatBtn').addEventListener('click', createNewSession);
 });
 
 // Event Listeners
