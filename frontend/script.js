@@ -122,12 +122,18 @@ function addMessage(content, type, sources = null, isWelcome = false) {
     let html = `<div class="message-content">${displayContent}</div>`;
     
     if (sources && sources.length > 0) {
-        const sourceItems = sources.map(s => {
+        const seen = new Set();
+        const unique = sources.filter(s => {
+            if (seen.has(s.label)) return false;
+            seen.add(s.label);
+            return true;
+        });
+        const sourceItems = unique.map(s => {
             if (s.url) {
-                return `<a href="${s.url}" target="_blank" rel="noopener">${s.label}</a>`;
+                return `<a class="source-pill" href="${s.url}" target="_blank" rel="noopener">${s.label}</a>`;
             }
-            return s.label;
-        }).join(', ');
+            return `<span class="source-pill">${s.label}</span>`;
+        }).join('');
         html += `
             <details class="sources-collapsible">
                 <summary class="sources-header">Sources</summary>
