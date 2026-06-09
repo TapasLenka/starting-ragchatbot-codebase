@@ -70,113 +70,107 @@ class TestDirectResponse:
         mock_tool_manager.execute_tool.assert_not_called()
 
 
-# ── Tests: tool-execution path ────────────────────────────────────────────────
+# ── Tests: sequential tool-execution loop ─────────────────────────────────────
 
-class TestToolExecution:
+class TestSequentialToolExecution:
 
-    def test_tool_use_response_triggers_two_api_calls(
+    def test_no_tool_use_baseline(
         self, ai_generator, mock_anthropic_client, mock_tool_manager, dummy_tools
     ):
-        mock_anthropic_client.messages.create.side_effect = [
-            make_tool_use_response(),
-            make_text_response("RAG stands for Retrieval Augmented Generation."),
-        ]
-        ai_generator.generate_response("What is RAG?", tools=dummy_tools, tool_manager=mock_tool_manager)
-        assert mock_anthropic_client.messages.create.call_count == 2
-
-    def test_final_text_is_from_second_response(
-        self, ai_generator, mock_anthropic_client, mock_tool_manager, dummy_tools
-    ):
-        mock_anthropic_client.messages.create.side_effect = [
-            make_tool_use_response(),
-            make_text_response("final answer from second call"),
-        ]
-        result = ai_generator.generate_response("What is RAG?", tools=dummy_tools, tool_manager=mock_tool_manager)
-        assert result == "final answer from second call"
-
-    def test_tool_manager_execute_called_with_correct_args(
-        self, ai_generator, mock_anthropic_client, mock_tool_manager, dummy_tools
-    ):
-        mock_anthropic_client.messages.create.side_effect = [
-            make_tool_use_response(tool_name="search_course_content", tool_input={"query": "RAG basics", "course_name": "AI101"}),
-            make_text_response("answer"),
-        ]
-        ai_generator.generate_response("What is RAG?", tools=dummy_tools, tool_manager=mock_tool_manager)
-        mock_tool_manager.execute_tool.assert_called_once_with(
-            "search_course_content", query="RAG basics", course_name="AI101"
+        """With tools available, Claude answers immediately without invoking any tool."""
+        mock_anthropic_client.messages.create.return_value = make_text_response("General answer.")
+        result = ai_generator.generate_response(
+            "What is 2+2?", tools=dummy_tools, tool_manager=mock_tool_manager
         )
+        assert mock_anthropic_client.messages.create.call_count == 1
+        mock_tool_manager.execute_tool.assert_not_called()
+        assert result == "General answer."
 
-    def test_second_api_call_has_no_tools_parameter(
+    def test_single_round_claude_answers_directly_after_tool(
         self, ai_generator, mock_anthropic_client, mock_tool_manager, dummy_tools
     ):
+        """After 1 tool round Call 2 (tools still available) returns end_turn — no extra synthesis."""
         mock_anthropic_client.messages.create.side_effect = [
             make_tool_use_response(),
-            make_text_response("answer"),
+            make_text_response("Answer after one search."),
         ]
-        ai_generator.generate_response("What is RAG?", tools=dummy_tools, tool_manager=mock_tool_manager)
+        result = ai_generator.generate_response(
+            "What is RAG?", tools=dummy_tools, tool_manager=mock_tool_manager
+        )
+        assert mock_anthropic_client.messages.create.call_count == 2
+        mock_tool_manager.execute_tool.assert_called_once()
+        assert result == "Answer after one search."
 
-        second_call_kwargs = mock_anthropic_client.messages.create.call_args_list[1][1]
-        assert "tools" not in second_call_kwargs
-        assert "tool_choice" not in second_call_kwargs
-
-    def test_second_call_message_list_has_three_entries(
+    def test_two_rounds_then_synthesis(
         self, ai_generator, mock_anthropic_client, mock_tool_manager, dummy_tools
     ):
-        """Messages must be: [user_query, assistant_tool_use, user_tool_result]."""
+        """Two tool rounds exhaust MAX_TOOL_ROUNDS; a synthesis call (no tools) follows."""
         mock_anthropic_client.messages.create.side_effect = [
-            make_tool_use_response(),
-            make_text_response("answer"),
+            make_tool_use_response(tool_id="tu_1"),
+            make_tool_use_response(tool_id="tu_2"),
+            make_text_response("Final synthesised answer."),
         ]
-        ai_generator.generate_response("What is RAG?", tools=dummy_tools, tool_manager=mock_tool_manager)
+        result = ai_generator.generate_response(
+            "What is RAG?", tools=dummy_tools, tool_manager=mock_tool_manager
+        )
+        assert mock_anthropic_client.messages.create.call_count == 3
+        assert mock_tool_manager.execute_tool.call_count == 2
+        assert result == "Final synthesised answer."
 
-        second_call_kwargs = mock_anthropic_client.messages.create.call_args_list[1][1]
-        messages = second_call_kwargs["messages"]
-        assert len(messages) == 3, f"Expected 3 messages, got {len(messages)}: {messages}"
-
-    def test_tool_result_message_has_correct_structure(
+    def test_tool_error_terminates_loop(
         self, ai_generator, mock_anthropic_client, mock_tool_manager, dummy_tools
     ):
-        mock_tool_manager.execute_tool.return_value = "course content here"
+        """A tool execution error skips further rounds; the synthesis call has no tools."""
+        mock_tool_manager.execute_tool.side_effect = RuntimeError("DB unavailable")
         mock_anthropic_client.messages.create.side_effect = [
-            make_tool_use_response(tool_id="toolu_CHECKID"),
-            make_text_response("answer"),
+            make_tool_use_response(tool_id="tu_err"),
+            make_text_response("I encountered an error."),
         ]
-        ai_generator.generate_response("What is RAG?", tools=dummy_tools, tool_manager=mock_tool_manager)
+        result = ai_generator.generate_response(
+            "What is RAG?", tools=dummy_tools, tool_manager=mock_tool_manager
+        )
+        assert mock_anthropic_client.messages.create.call_count == 2
+        mock_tool_manager.execute_tool.assert_called_once()
 
-        second_call_kwargs = mock_anthropic_client.messages.create.call_args_list[1][1]
-        tool_result_msg = second_call_kwargs["messages"][-1]
+        synthesis_kwargs = mock_anthropic_client.messages.create.call_args_list[1][1]
+        assert "tools" not in synthesis_kwargs
 
-        assert tool_result_msg["role"] == "user"
-        assert isinstance(tool_result_msg["content"], list)
-        result_block = tool_result_msg["content"][0]
-        assert result_block["type"] == "tool_result"
-        assert result_block["tool_use_id"] == "toolu_CHECKID"
-        assert result_block["content"] == "course content here"
+        tool_result_block = synthesis_kwargs["messages"][-1]["content"][0]
+        assert "Tool error:" in tool_result_block["content"]
+        assert result == "I encountered an error."
 
-    def test_assistant_message_contains_original_response_content(
+    def test_max_tool_rounds_enforced(
         self, ai_generator, mock_anthropic_client, mock_tool_manager, dummy_tools
     ):
-        first_response = make_tool_use_response()
+        """The inter-round API call has tools; the synthesis call (Call 3) must not."""
         mock_anthropic_client.messages.create.side_effect = [
-            first_response,
-            make_text_response("answer"),
+            make_tool_use_response(tool_id="tu_1"),
+            make_tool_use_response(tool_id="tu_2"),
+            make_text_response("done"),
         ]
-        ai_generator.generate_response("What is RAG?", tools=dummy_tools, tool_manager=mock_tool_manager)
+        ai_generator.generate_response(
+            "What is RAG?", tools=dummy_tools, tool_manager=mock_tool_manager
+        )
+        calls = mock_anthropic_client.messages.create.call_args_list
+        # Call 2 (inter-round, index 1) keeps tools so Claude can use them again
+        assert "tools" in calls[1][1]
+        # Call 3 (synthesis, index 2) must strip tools to prevent further looping
+        assert "tools" not in calls[2][1]
+        assert mock_tool_manager.execute_tool.call_count == 2
 
-        second_call_kwargs = mock_anthropic_client.messages.create.call_args_list[1][1]
-        assistant_msg = second_call_kwargs["messages"][1]
-        assert assistant_msg["role"] == "assistant"
-        # The SDK content list from the first response must be passed through verbatim
-        assert assistant_msg["content"] is first_response.content
-
-    def test_tool_returning_error_string_does_not_raise(
+    def test_synthesis_message_list_has_five_entries_after_two_rounds(
         self, ai_generator, mock_anthropic_client, mock_tool_manager, dummy_tools
     ):
-        mock_tool_manager.execute_tool.return_value = "Search error: n_results exceeds collection count"
+        """Synthesis call receives exactly 5 messages:
+        [user_query, asst_round1, result_round1, asst_round2, result_round2]."""
         mock_anthropic_client.messages.create.side_effect = [
-            make_tool_use_response(),
-            make_text_response("I could not find that information."),
+            make_tool_use_response(tool_id="tu_1"),
+            make_tool_use_response(tool_id="tu_2"),
+            make_text_response("done"),
         ]
-        # Must NOT raise — the error string is just passed as context to Claude
-        result = ai_generator.generate_response("What is RAG?", tools=dummy_tools, tool_manager=mock_tool_manager)
-        assert isinstance(result, str)
+        ai_generator.generate_response(
+            "What is RAG?", tools=dummy_tools, tool_manager=mock_tool_manager
+        )
+        synthesis_kwargs = mock_anthropic_client.messages.create.call_args_list[2][1]
+        messages = synthesis_kwargs["messages"]
+        assert len(messages) == 5, f"Expected 5 messages, got {len(messages)}: {messages}"
